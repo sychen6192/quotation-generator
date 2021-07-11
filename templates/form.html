@@ -1,0 +1,166 @@
+{% extends 'bootstrap/base.html' %}
+{% block scripts %}
+  {{ super() }}
+  {{ datepicker.loader() }} {# to load jQuery-ui #}
+  {{ datepicker.picker(id=".dp") }}
+{% endblock %}
+
+{% block body %}
+  <div class="container">
+
+  <form class="well form-horizontal" action="/generate" method="post"  id="contact_form">
+<fieldset>
+
+<!-- Form Name -->
+<legend><center><h2><b>聖大報價單產生器</b></h2></center></legend><br>
+
+<!-- Text input-->
+<div class="form-group">
+  <label class="col-md-4 control-label">報價有效天數</label>
+  <div class="col-md-4 inputGroupContainer">
+  <div class="input-group">
+  <span class="input-group-addon"><i class="glyphicon glyphicon-ok"></i></span>
+  <input name="day" placeholder="報價有效天數" class="form-control" type="text">
+    </div>
+  </div>
+</div>
+
+<div class="form-group">
+  <label class="col-md-4 control-label">客戶姓名</label>
+  <div class="col-md-4 inputGroupContainer">
+  <div class="input-group">
+  <span class="input-group-addon"><i class="glyphicon glyphicon-user"></i></span>
+  <input name="name" placeholder="客戶姓名" class="form-control"  type="text">
+    </div>
+  </div>
+</div>
+
+<!-- Text input-->
+
+<div class="form-group">
+  <label class="col-md-4 control-label" >公司統編</label>
+    <div class="col-md-4 inputGroupContainer">
+    <div class="input-group">
+  <span class="input-group-addon"><i class="glyphicon glyphicon-briefcase"></i></span>
+  <input name="taxid" placeholder="公司統編" class="form-control"  type="text">
+    </div>
+  </div>
+</div>
+
+<div class="form-group">
+<label class="col-md-4 control-label" >公司電話</label>
+  <div class="col-md-4 inputGroupContainer">
+  <div class="input-group">
+<span class="input-group-addon"><i class="glyphicon glyphicon-phone-alt"></i></span>
+<input name="phone" placeholder="公司電話" class="form-control"  type="text">
+  </div>
+</div>
+</div>
+
+<div class="form-group">
+  <label class="col-md-4 control-label" >商品項目</label>
+    <div class="col-md-4 inputGroupContainer">
+    <div class="input-group">
+  <span class="input-group-addon"><i class="glyphicon glyphicon-phone-alt"></i></span>
+  <input name="phone" placeholder="商品項目" class="form-control"  type="text">
+    </div>
+  </div>
+</div>
+
+<div class="form-group">
+<label class="col-md-4 control-label">稅金</label>
+  <div class="col-md-4 selectContainer">
+  <div class="input-group">
+      <span class="input-group-addon"><i class="glyphicon glyphicon-list"></i></span>
+  <select name="tax" class="form-control selectpicker">
+    <option value="T">未稅(另加5%)</option>
+    <option value="">含稅</option>
+  </select>
+</div>
+</div>
+</div>
+
+
+<div class="form-group">
+<label class="col-md-4 control-label">售貨員</label>
+  <div class="col-md-4 selectContainer">
+  <div class="input-group">
+      <span class="input-group-addon"><i class="glyphicon glyphicon-list"></i></span>
+  <select name="tax" class="form-control selectpicker">
+    <option value="陳聖尹">陳聖尹</option>
+    <option value="陳紹雲">陳紹雲</option>
+  </select>
+</div>
+</div>
+</div>
+
+<div class="form-group">
+  <label class="col-md-4 control-label">預計出貨日</label>
+  <div class="col-md-4 inputGroupContainer">
+  <div class="input-group">
+  <span class="input-group-addon"><i class="glyphicon glyphicon-triangle-right"></i></span>
+  <input  name="name" placeholder="預計出貨日" class="form-control"  type="text">
+    </div>
+  </div>
+</div>
+
+<div class="form-group">
+<label class="col-md-4 control-label">發貨方式</label>
+  <div class="col-md-4 selectContainer">
+  <div class="input-group">
+      <span class="input-group-addon"><i class="glyphicon glyphicon-list"></i></span>
+  <select name="delivery" class="form-control selectpicker">
+    <option value="郵局">郵局</option>
+    <option value="自取">自取</option>
+    <option value="新竹貨運">新竹貨運</option>
+    <option value="超商取貨">超商取貨</option>
+    <option value="其他貨運公司">其他貨運公司</option>
+  </select>
+</div>
+</div>
+</div>
+
+
+<!-- Text input-->
+
+<div class="form-group">
+<label class="col-md-4 control-label">付款方式</label>
+  <div class="col-md-4 selectContainer">
+  <div class="input-group">
+      <span class="input-group-addon"><i class="glyphicon glyphicon-usd"></i></span>
+  <select name="delivery" class="form-control selectpicker">
+    <option value="支票">支票</option>
+    <option value="現金">現金</option>
+    <option value="匯款">匯款</option>
+  </select>
+</div>
+</div>
+</div>
+
+<div class="form-group">
+  <label class="col-md-4 control-label">備註</label>
+  <div class="col-md-4 inputGroupContainer">
+  <div class="input-group">
+  <span class="input-group-addon"><i class="glyphicon glyphicon-alert"></i></span>
+  <input  name="name" placeholder="備註" class="form-control"  type="text">
+    </div>
+  </div>
+</div>
+
+
+<!-- Success message -->
+<!--<div class="alert alert-success" role="alert" id="success_message">Success <i class="glyphicon glyphicon-thumbs-up"></i> Success!.</div>-->
+
+<!-- Button -->
+<div class="form-group">
+  <label class="col-md-4 control-label"></label>
+  <div class="col-md-4"><br>
+    &nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp<button type="submit" class="btn btn-warning" >&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbspSUBMIT <span class="glyphicon glyphicon-send"></span>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp</button>
+  </div>
+</div>
+
+</fieldset>
+</form>
+</div>
+    </div><!-- /.container -->
+{% endblock %}
