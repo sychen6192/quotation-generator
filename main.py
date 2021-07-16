@@ -21,8 +21,7 @@ def generate():
 
 @app.route('/download/<filename>')
 def downloadFile (filename):
-    #For windows you need to use drive name [ex: F:/Example.pdf]
-    path = f'C:\\quotation-generator\\{filename}.pdf'
+    path = f'{filename}'
     return send_file(path, as_attachment=True)
 
 if __name__ =="__main__":
