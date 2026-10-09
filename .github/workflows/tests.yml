@@ -9,11 +9,17 @@ jobs:
     runs-on: ubuntu-24.04  # 3.9 沒有 Ubuntu 26.04 的預編版本
     strategy:
       matrix:
-        python-version: ['3.9', '3.13']
+        include:
+          - python-version: '3.9'
+          # 這一組另外裝 LibreOffice，跑實際轉 PDF、一頁、中文字型、四捨五入一致性的測試
+          - python-version: '3.13'
+            libreoffice: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - if: matrix.libreoffice
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc fonts-noto-cjk poppler-utils
       - run: pip install -r requirements-dev.txt
       - run: pytest -rs

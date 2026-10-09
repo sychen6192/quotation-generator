@@ -1,0 +1,88 @@
+{% extends 'base.html' %}
+{% import '_status.html' as status %}
+{% block title %}{{ quote.quote_no }} - 聖大國際報價單{% endblock %}
+
+{% block content %}
+{% if request.args.get('created') %}
+  <div class="alert alert-success" role="alert">報價單 {{ quote.quote_no }} 已經產生！</div>
+{% endif %}
+{% if request.args.get('address_missing') %}
+  <div class="alert alert-warning" role="alert">查不到統編 {{ quote.tax_id }} 的公司地址，報價單上留空。</div>
+{% endif %}
+{% if request.args.get('pdf_failed') %}
+  <div class="alert alert-warning" role="alert">PDF 轉檔失敗，請先下載 Excel 檔，或稍後再按「下載 PDF」重試。</div>
+{% endif %}
+{% if notice %}
+  <div class="alert alert-warning" role="alert">{{ notice }}</div>
+{% endif %}
+
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0 me-auto">{{ quote.quote_no }} {{ status.badge(record, today) }}</h1>
+  {{ status.buttons(record, statuses) }}
+</div>
+
+<div class="card shadow-sm mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">客戶</dt>
+      <dd class="col-sm-9">{{ quote.customer_name }}{% if quote.company_name %}（{{ quote.company_name }}）{% endif %}</dd>
+      {% if quote.tax_id %}
+        <dt class="col-sm-3">統一編號</dt><dd class="col-sm-9">{{ quote.tax_id }}</dd>
+      {% endif %}
+      {% if quote.company_address %}
+        <dt class="col-sm-3">公司地址</dt><dd class="col-sm-9">{{ quote.company_address }}</dd>
+      {% endif %}
+      <dt class="col-sm-3">電話</dt><dd class="col-sm-9">{{ quote.phone }}</dd>
+      <dt class="col-sm-3">報價日期</dt><dd class="col-sm-9">{{ quote.quote_date.strftime('%Y/%m/%d') }}</dd>
+      <dt class="col-sm-3">有效期至</dt><dd class="col-sm-9">{{ quote.valid_until.strftime('%Y/%m/%d') }}</dd>
+      <dt class="col-sm-3">銷售員</dt><dd class="col-sm-9">{{ quote.seller }}</dd>
+      <dt class="col-sm-3">出貨 / 付款</dt>
+      <dd class="col-sm-9">{{ quote.ship_date.strftime('%Y/%m/%d') if quote.ship_date else '出貨日未定' }}，{{ quote.delivery_method }}，{{ quote.payment_method }}</dd>
+      {% if quote.note %}
+        <dt class="col-sm-3">備註</dt><dd class="col-sm-9" style="white-space: pre-line">{{ quote.note }}</dd>
+      {% endif %}
+      {% if record.copied_from %}
+        <dt class="col-sm-3">複製自</dt>
+        <dd class="col-sm-9"><a href="{{ url_for('quote_detail', quote_no=record.copied_from) }}">{{ record.copied_from }}</a></dd>
+      {% endif %}
+    </dl>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr><th>說明</th><th class="text-end">數量</th><th class="text-end">單價</th><th class="text-end">金額</th></tr>
+      </thead>
+      <tbody>
+        {% for p in quote.products %}
+          <tr>
+            <td>{{ p.name }}</td>
+            <td class="text-end">{{ p.quantity|number }}</td>
+            <td class="text-end">{{ p.price|number }}</td>
+            <td class="text-end">{{ p.amount|money }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr><th colspan="3" class="text-end">小計</th><td class="text-end">{{ totals.subtotal|money }}</td></tr>
+        {% if totals.tax_included %}
+          <tr><th colspan="3" class="text-end">內含稅額（5%）</th><td class="text-end">{{ totals.tax|money }}</td></tr>
+          <tr><th colspan="3" class="text-end">總計（含稅）</th><td class="text-end fw-bold">{{ totals.total|money }}</td></tr>
+          <tr class="text-muted"><th colspan="3" class="text-end fw-normal">未稅金額</th><td class="text-end">{{ totals.net|money }}</td></tr>
+        {% else %}
+          <tr><th colspan="3" class="text-end">稅額（5%）</th><td class="text-end">{{ totals.tax|money }}</td></tr>
+          <tr><th colspan="3" class="text-end">總計</th><td class="text-end fw-bold">{{ totals.total|money }}</td></tr>
+        {% endif %}
+      </tfoot>
+    </table>
+  </div>
+</div>
+
+<div class="d-flex flex-wrap gap-2">
+  <a class="btn btn-primary" href="{{ url_for('download', quote_no=quote.quote_no, file_type='pdf') }}">
+    {{ '下載 PDF' if has_pdf else '產生並下載 PDF' }}</a>
+  <a class="btn btn-outline-primary" href="{{ url_for('download', quote_no=quote.quote_no, file_type='xlsx') }}">下載 Excel</a>
+  <a class="btn btn-outline-secondary" href="{{ url_for('copy_quote', quote_no=quote.quote_no) }}">複製這張</a>
+  <a class="btn btn-link" href="{{ url_for('index') }}">新增報價</a>
+  <a class="btn btn-link" href="{{ url_for('quote_list') }}">所有報價</a>
+</div>
+{% endblock %}

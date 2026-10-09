@@ -6,9 +6,9 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import List, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
@@ -27,10 +27,39 @@ DELIVERY_METHODS = ('郵局', '自取', '新竹貨運', '超商取貨', '其他'
 PAYMENT_METHODS = ('支票', '現金', '匯款')
 TAX_OPTIONS = (('n', '未稅(另加5%)'), ('y', '含稅'))
 
+# 報價單底部「如您有任何疑問，請即聯絡：…」用的聯絡方式（電話，Email）。
+# 沒有列在這裡的銷售員，會保留範本上原本的聯絡人。
+SELLER_CONTACTS = {
+    '陳聖尹': '0931330086，teching_chen2000@yahoo.com.tw',
+}
+CONTACT_LINE_CELL = 'B40'
+
+# 備註欄下方的快速按鈕，按了會把文字加到備註
+NOTE_PRESETS = (
+    '交期：確認訂單後 7 個工作天',
+    '運費另計',
+    '訂金 30%，餘款出貨前付清',
+    '以新台幣計價',
+)
+
+# 報價單號：SD + 年月 + 當月流水號，例如 SD202610-001（每月重新編號）
+QUOTE_NO_PREFIX = 'SD'
+QUOTE_NO_DIGITS = 3
+
 # 範本版面：品項在第 24~33 列，B=數量、C=說明、E=單價、F=應稅(T)、G=金額(公式)
 FIRST_PRODUCT_ROW = 24
 MAX_PRODUCTS = 10
 TAX_RATE = Decimal('0.05')  # 要和範本 G35 的稅率一致
+TAX_PERCENT = int(TAX_RATE * 100)  # 含稅時用 *5/105 回推內含稅額（1.05 在二進位不精確，會有誤差）
+CENT = Decimal('0.01')
+DOLLAR = Decimal('1')
+
+# 和發票一樣：每列金額四捨五入到分，營業稅四捨五入到元（Excel 的 ROUND 也是四捨五入）
+LINE_AMOUNT_FORMULA = '=ROUND(B{row}*E{row},2)'
+TAX_EXCLUDED_FORMULA = '=ROUND(G35*SUMIF(F24:F33,"T",G24:G33),0)'
+TAX_INCLUDED_FORMULA = f'=ROUND((G34+G37)*{TAX_PERCENT}/{100 + TAX_PERCENT},0)'
+TOTAL_EXCLUDED_FORMULA = '=G34+G36+G37'
+TOTAL_INCLUDED_FORMULA = '=G34+G37'  # 含稅：稅額已經在小計裡，不能再加一次
 
 # 備註寫在合併後的 C16:G18；品名寫在 C:D 合併儲存格，太長時自動換行加高該列。
 # 寬度以半形字元計（中文字算 2），抓得比實際保守，避免 PDF 上被截掉。
@@ -70,7 +99,7 @@ class Product:
 
     @property
     def amount(self) -> Decimal:
-        return self.quantity * self.price
+        return (self.quantity * self.price).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
 @dataclass
@@ -89,28 +118,108 @@ class Quotation:
     company_address: str = ''
     ship_date: Optional[date] = None
     note: str = ''
+    quote_no: str = ''
 
     @property
     def valid_until(self) -> date:
         return self.quote_date + timedelta(days=self.valid_days)
 
-    # 以下金額與範本公式一致（G34 小計、G36 稅額、G38 總計），用來在網頁上顯示
     @property
-    def subtotal(self) -> Decimal:
-        return sum((p.amount for p in self.products), Decimal(0))
-
-    @property
-    def tax(self) -> Decimal:
-        return Decimal(0) if self.tax_included else self.subtotal * TAX_RATE
-
-    @property
-    def total(self) -> Decimal:
-        return self.subtotal + self.tax
+    def totals(self) -> 'Totals':
+        return compute_totals(self.products, self.tax_included)
 
     def file_stem(self) -> str:
-        """例如「聖大國際有限公司報價單1009」，已移除檔名不允許的字元。"""
+        """例如「聖大國際有限公司報價單SD202610-001」，已移除檔名不允許的字元。"""
         who = _UNSAFE_FILENAME_CHARS.sub('', self.company_name or self.customer_name).strip(' .')
-        return f'{who[:50] or "客戶"}報價單{self.quote_date:%m%d}'
+        suffix = self.quote_no or f'{self.quote_date:%m%d}'
+        return f'{who[:50] or "客戶"}報價單{suffix}'
+
+    def to_dict(self) -> Dict[str, Any]:
+        """存進資料庫的快照：之後客戶資料或選項改了，舊報價單內容也不會跟著變。"""
+        return {
+            'quote_no': self.quote_no,
+            'quote_date': self.quote_date.isoformat(),
+            'valid_days': self.valid_days,
+            'customer_name': self.customer_name,
+            'phone': self.phone,
+            'tax_id': self.tax_id,
+            'company_name': self.company_name,
+            'company_address': self.company_address,
+            'products': [{'name': p.name, 'quantity': str(p.quantity), 'price': str(p.price)}
+                         for p in self.products],
+            'tax_included': self.tax_included,
+            'seller': self.seller,
+            'delivery_method': self.delivery_method,
+            'payment_method': self.payment_method,
+            'ship_date': self.ship_date.isoformat() if self.ship_date else None,
+            'note': self.note,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> 'Quotation':
+        return cls(
+            quote_no=data['quote_no'],
+            quote_date=date.fromisoformat(data['quote_date']),
+            valid_days=int(data['valid_days']),
+            customer_name=data['customer_name'],
+            phone=data['phone'],
+            tax_id=data['tax_id'],
+            company_name=data['company_name'],
+            company_address=data['company_address'],
+            products=[Product(p['name'], Decimal(p['quantity']), Decimal(p['price']))
+                      for p in data['products']],
+            tax_included=bool(data['tax_included']),
+            seller=data['seller'],
+            delivery_method=data['delivery_method'],
+            payment_method=data['payment_method'],
+            ship_date=date.fromisoformat(data['ship_date']) if data.get('ship_date') else None,
+            note=data['note'],
+        )
+
+    def to_form(self) -> Dict[str, str]:
+        """轉回表單欄位，給「複製這張」用。出貨日不帶過去，舊的日期通常已經不對了。"""
+        return {
+            'cname': self.customer_name,
+            'cphone': self.phone,
+            'taxid': self.tax_id,
+            'companyName': self.company_name,
+            'companyAddress': self.company_address,
+            'product': '\n'.join(f'{p.name},{p.quantity:f},{p.price:f}' for p in self.products),
+            'tax': 'y' if self.tax_included else 'n',
+            'vday': str(self.valid_days),
+            'seller': self.seller,
+            'delivery': self.delivery_method,
+            'cash': self.payment_method,
+            'note': self.note,
+        }
+
+
+@dataclass(frozen=True)
+class Totals:
+    """和報價單上的公式算法一致：G34 小計、G36 稅額（含稅時是內含稅額）、G38 總計。"""
+    subtotal: Decimal
+    tax: Decimal
+    total: Decimal
+    net: Decimal  # 未稅金額
+    tax_included: bool
+
+
+def compute_totals(products: List[Product], tax_included: bool) -> Totals:
+    subtotal = sum((p.amount for p in products), Decimal(0))
+    if tax_included:
+        # 含稅價：從總額回推內含的稅，未稅金額吸收四捨五入的差額，兩者相加剛好等於總額
+        tax = (subtotal * TAX_PERCENT / (100 + TAX_PERCENT)).quantize(DOLLAR, rounding=ROUND_HALF_UP)
+        return Totals(subtotal, tax, subtotal, subtotal - tax, True)
+    tax = (subtotal * TAX_RATE).quantize(DOLLAR, rounding=ROUND_HALF_UP)
+    return Totals(subtotal, tax, subtotal + tax, subtotal, False)
+
+
+def quote_no_prefix(quote_date: date) -> str:
+    return f'{QUOTE_NO_PREFIX}{quote_date:%Y%m}-'
+
+
+def format_quote_no(quote_date: date, seq: int) -> str:
+    return f'{quote_no_prefix(quote_date)}{seq:0{QUOTE_NO_DIGITS}d}'
 
 
 def today_in_taiwan() -> date:
@@ -234,9 +343,20 @@ def parse_products(raw: str, errors: List[str]) -> List[Product]:
         errors.append('請至少輸入一個品項')
     elif len(products) > MAX_PRODUCTS:
         errors.append(f'品項最多 {MAX_PRODUCTS} 項（範本只有 {MAX_PRODUCTS} 列），目前有 {len(products)} 項')
-    elif sum(p.amount for p in products) < 0:
+    elif sum((p.amount for p in products), Decimal(0)) < 0:
         errors.append('品項合計不可小於 0，請檢查折扣列')
     return products
+
+
+def preview(form: Mapping[str, str]) -> Dict[str, Any]:
+    """即時試算用：只看品項與稅別，回傳每列金額、錯誤和合計。"""
+    errors: List[str] = []
+    products = parse_products(clean_text(form.get('product') or ''), errors)
+    return {
+        'errors': errors,
+        'lines': [str(p.amount) for p in products],
+        'totals': compute_totals(products, (form.get('tax') or '').strip() == 'y'),
+    }
 
 
 def _parse_number(raw: str) -> Optional[Decimal]:
@@ -271,6 +391,9 @@ def build_workbook(quotation: Quotation, template: Path = TEMPLATE_PATH) -> Work
         cell.data_type = 's'
 
     put_text('G3', f'{quotation.quote_date:%Y/%m/%d}')
+    if quotation.quote_no:
+        put_text('F4', '報價單號')
+        put_text('G4', quotation.quote_no)
     put_text('G8', f'{quotation.valid_until:%Y/%m/%d}')
     put_text('B9', f'姓名：{quotation.customer_name}')
     if quotation.company_name:
@@ -286,15 +409,20 @@ def build_workbook(quotation: Quotation, template: Path = TEMPLATE_PATH) -> Work
     for row in range(16, 19):
         sheet.row_dimensions[row].height = 15  # 預設 12.75 放三行字會壓到下面的表格框線
 
+    contact = SELLER_CONTACTS.get(quotation.seller)
+    if contact:
+        put_text(CONTACT_LINE_CELL, f'如您有任何疑問，請即聯絡：{quotation.seller}，{contact}')
+
     put_text('B20', quotation.seller)
     put_text('C20', f'{quotation.ship_date:%Y/%m/%d}' if quotation.ship_date else '-')
     put_text('D20', quotation.delivery_method)
     put_text('F20', quotation.payment_method)
 
-    # 先清掉範本裡的範例列，G 欄的「=B*E」公式保留
+    # 先清掉範本裡的範例列；G 欄改成四捨五入到分的公式（保留原本的儲存格格式）
     for row in range(FIRST_PRODUCT_ROW, FIRST_PRODUCT_ROW + MAX_PRODUCTS):
         for column in 'BCEF':
             sheet[f'{column}{row}'].value = None
+        sheet[f'G{row}'] = LINE_AMOUNT_FORMULA.format(row=row)
     for row, product in enumerate(quotation.products, start=FIRST_PRODUCT_ROW):
         sheet[f'B{row}'] = _excel_number(product.quantity)
         put_text(f'C{row}', product.name)
@@ -309,6 +437,14 @@ def build_workbook(quotation: Quotation, template: Path = TEMPLATE_PATH) -> Work
         # 範本的稅額公式只對 F 欄標 T 的列加 5%；含稅價格就不標
         if not quotation.tax_included:
             put_text(f'F{row}', 'T')
+
+    if quotation.tax_included:
+        put_text('F36', '內含稅額')
+        sheet['G36'] = TAX_INCLUDED_FORMULA
+        sheet['G38'] = TOTAL_INCLUDED_FORMULA
+    else:
+        sheet['G36'] = TAX_EXCLUDED_FORMULA
+        sheet['G38'] = TOTAL_EXCLUDED_FORMULA
 
     # 品名換行加高後仍然縮印在一頁內（只會縮小、不會放大）
     sheet.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)

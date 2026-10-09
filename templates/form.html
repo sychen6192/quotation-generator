@@ -16,6 +16,12 @@
 {% block content %}
 <h1 class="h3 text-center mb-4">聖大國際報價單產生器</h1>
 
+{% if copied_from %}
+  <div class="alert alert-info" role="status">
+    以 <a href="{{ url_for('quote_detail', quote_no=copied_from) }}">{{ copied_from }}</a> 為範本；產生時會給新的單號和今天的日期。
+  </div>
+{% endif %}
+
 {% if errors %}
   <div class="alert alert-danger" role="alert">
     <ul class="mb-0">
@@ -24,22 +30,19 @@
   </div>
 {% endif %}
 
-<form class="card card-body shadow-sm" action="{{ url_for('generate') }}" method="post" id="quotation-form">
+{# data-blank：空白的新表單才套用瀏覽器記住的銷售員預設值（複製、錯誤重填時不套用） #}
+<form class="card card-body shadow-sm" action="{{ url_for('generate') }}" method="post" id="quotation-form"
+      data-preview-url="{{ url_for('preview') }}" data-customer-url="{{ url_for('api_customer') }}"
+      data-blank="{{ 'true' if not form and not errors else 'false' }}">
+  {% if copied_from %}<input type="hidden" name="copied_from" value="{{ copied_from }}">{% endif %}
+
   <fieldset class="row g-3">
     <legend class="h5 mb-0">客戶資料</legend>
-    <div class="col-sm-6">
-      <label class="form-label" for="cname">客戶姓名 <span class="text-danger">*</span></label>
-      <input class="form-control" id="cname" name="cname" maxlength="200" required value="{{ form.get('cname', '') }}">
-    </div>
-    <div class="col-sm-6">
-      <label class="form-label" for="cphone">公司電話 <span class="text-danger">*</span></label>
-      <input class="form-control" id="cphone" name="cphone" type="tel" maxlength="200" required value="{{ form.get('cphone', '') }}">
-    </div>
     <div class="col-sm-6">
       <label class="form-label" for="taxid">公司統編</label>
       <input class="form-control" id="taxid" name="taxid" inputmode="numeric" pattern="\d{8}" maxlength="8"
              title="8 位數字" aria-describedby="taxid-help" value="{{ form.get('taxid', '') }}">
-      <div class="form-text" id="taxid-help">填統編會自動帶出公司名稱與地址</div>
+      <div class="form-text" id="taxid-help" aria-live="polite">填統編會自動帶出上次報價或經濟部登記的公司資料</div>
     </div>
     <div class="col-sm-6">
       <label class="form-label" for="companyName">公司名稱</label>
@@ -51,17 +54,48 @@
       <input class="form-control" id="companyAddress" name="companyAddress" maxlength="200"
              placeholder="有統編可不填" value="{{ form.get('companyAddress', '') }}">
     </div>
+    <div class="col-sm-6">
+      <label class="form-label" for="cname">客戶姓名 <span class="text-danger">*</span></label>
+      <input class="form-control" id="cname" name="cname" maxlength="200" required value="{{ form.get('cname', '') }}">
+    </div>
+    <div class="col-sm-6">
+      <label class="form-label" for="cphone">公司電話 <span class="text-danger">*</span></label>
+      <input class="form-control" id="cphone" name="cphone" type="tel" maxlength="200" required value="{{ form.get('cphone', '') }}">
+    </div>
   </fieldset>
 
   <fieldset class="row g-3 mt-2">
     <legend class="h5 mb-0">品項</legend>
+    {% if items %}
+      <div class="col-12">
+        <label class="form-label" for="item-name">從報價過的品項加入</label>
+        <div class="input-group">
+          <input class="form-control" id="item-name" list="item-names" placeholder="輸入品名搜尋" autocomplete="off">
+          <input class="form-control" id="item-qty" type="number" min="1" value="1" style="max-width: 6rem" aria-label="數量">
+          <button class="btn btn-outline-secondary" type="button" id="item-add">加入</button>
+        </div>
+        <datalist id="item-names">
+          {% for item in items %}<option value="{{ item.name }}" data-price="{{ item.price }}">{% endfor %}
+        </datalist>
+      </div>
+    {% endif %}
     <div class="col-12">
       <label class="form-label" for="product">品項（一行一項，最多 {{ max_products }} 項） <span class="text-danger">*</span></label>
       {# textarea 開始標籤後刻意換行：HTML 會吃掉緊接的第一個換行，否則開頭的空白行會消失、錯誤行號對不上 #}
       <textarea class="form-control font-monospace" id="product" name="product" rows="5" required
                 aria-describedby="product-help" placeholder="電腦主機,2,5500&#10;加購記憶體,2,400">
 {{ form.get('product', '') }}</textarea>
-      <div class="form-text" id="product-help">格式：商品名稱,數量,單價（逗號可用全形「，」）。名稱和金額裡不要再用逗號，1000 不要寫成 1,000。折扣可以寫成「折扣,1,-500」。</div>
+      <div class="form-text" id="product-help">格式：商品名稱,數量,單價（逗號可用全形「，」）。名稱和金額裡不要再用逗號，1000 不要寫成 1,000。折扣可以寫成「折扣,1,-500」，運費寫成「運費,1,150」。</div>
+      <div id="preview" class="mt-2" aria-live="polite" hidden>
+        <ul class="text-danger small mb-1" id="preview-errors"></ul>
+        <table class="table table-sm w-auto ms-auto mb-0">
+          <tbody>
+            <tr><th class="text-end fw-normal">小計</th><td class="text-end" id="preview-subtotal"></td></tr>
+            <tr><th class="text-end fw-normal" id="preview-tax-label">稅額（5%）</th><td class="text-end" id="preview-tax"></td></tr>
+            <tr><th class="text-end">總計</th><td class="text-end fw-bold" id="preview-total"></td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
     {{ select('tax', '稅金', tax_options) }}
     {{ select('vday', '報價有效天數', valid_days) }}
@@ -81,6 +115,11 @@
       <textarea class="form-control" id="note" name="note" rows="3" maxlength="300" aria-describedby="note-help">
 {{ form.get('note', '') }}</textarea>
       <div class="form-text" id="note-help">報價單上最多放 3 行</div>
+      <div class="d-flex flex-wrap gap-1 mt-1">
+        {% for preset in note_presets %}
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-note-preset="{{ preset }}">＋{{ preset }}</button>
+        {% endfor %}
+      </div>
     </div>
   </fieldset>
 
@@ -91,16 +130,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-  // 產生 PDF 要幾秒鐘，避免重複送出；按「上一頁」回來時再恢復按鈕
-  var button = document.getElementById('submit-button');
-  document.getElementById('quotation-form').addEventListener('submit', function () {
-    button.disabled = true;
-    button.textContent = '產生中…';
-  });
-  window.addEventListener('pageshow', function () {
-    button.disabled = false;
-    button.textContent = '產生報價單';
-  });
-</script>
+<script src="{{ url_for('static', filename='form.js') }}"></script>
 {% endblock %}

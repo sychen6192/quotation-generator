@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+{% import '_status.html' as status %}
+{% block title %}歷史報價 - 聖大國際報價單{% endblock %}
+{% block width %}1100px{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0 me-auto">歷史報價</h1>
+  <form class="d-flex gap-2" method="get" action="{{ url_for('quote_list') }}" role="search">
+    <input class="form-control" type="search" name="q" value="{{ keywords }}" style="min-width: 16rem"
+           placeholder="單號、客戶、公司、統編、電話、品名" aria-label="搜尋報價">
+    <button class="btn btn-outline-primary text-nowrap" type="submit">搜尋</button>
+  </form>
+</div>
+
+{% if not records %}
+  <p class="text-muted">{{ '找不到符合的報價。' if keywords else '還沒有報價紀錄。' }}</p>
+{% else %}
+  <p class="text-muted small">共 {{ total }} 筆{% if keywords %}符合「{{ keywords }}」{% endif %}</p>
+  <div class="table-responsive card shadow-sm">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>單號</th><th>日期</th><th>客戶</th><th>銷售員</th>
+          <th class="text-end">總計</th><th>有效至</th><th>狀態</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for record in records %}
+          {% set quote = record.quote %}
+          <tr>
+            <td class="text-nowrap"><a href="{{ url_for('quote_detail', quote_no=quote.quote_no) }}">{{ quote.quote_no }}</a></td>
+            <td class="text-nowrap">{{ quote.quote_date.strftime('%Y/%m/%d') }}</td>
+            <td>{{ quote.company_name or quote.customer_name }}{% if quote.company_name %}<div class="small text-muted">{{ quote.customer_name }}</div>{% endif %}</td>
+            <td class="text-nowrap">{{ quote.seller }}</td>
+            <td class="text-end text-nowrap">{{ quote.totals.total|money }}</td>
+            <td class="text-nowrap">{{ quote.valid_until.strftime('%Y/%m/%d') }}</td>
+            <td>{{ status.badge(record, today) }}</td>
+            <td class="text-nowrap">
+              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('download', quote_no=quote.quote_no, file_type='pdf') }}">PDF</a>
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('copy_quote', quote_no=quote.quote_no) }}">複製</a>
+              {{ status.buttons(record, statuses, 'history', keywords, page) }}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pages > 1 %}
+    <nav class="mt-3" aria-label="分頁">
+      <ul class="pagination">
+        {# 只列出目前頁附近的頁碼，資料多的時候分頁列才不會太長 #}
+        {% for n in range(1, pages + 1) if n in (1, pages) or (n - page)|abs <= 3 %}
+          <li class="page-item{% if n == page %} active{% endif %}">
+            <a class="page-link" href="{{ url_for('quote_list', q=keywords, page=n) }}">{{ n }}</a>
+          </li>
+        {% endfor %}
+      </ul>
+    </nav>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,26 @@
+{# 狀態標籤：已過期不另外存，由有效日期判斷 #}
+{% macro badge(record, today) -%}
+  {% if record.is_expired(today) %}
+    <span class="badge text-bg-danger">已過期</span>
+  {% else %}
+    {% set colors = {'open': 'primary', 'won': 'success', 'lost': 'secondary', 'void': 'dark'} %}
+    <span class="badge text-bg-{{ colors.get(record.status, 'secondary') }}">{{ record.status_label }}</span>
+  {% endif %}
+{%- endmacro %}
+
+{# 改狀態的按鈕：已報價可以改成成交 / 未成交 / 作廢；其他狀態可以改回已報價 #}
+{% macro buttons(record, statuses, return_to='detail', q='', page=1) -%}
+  <form method="post" action="{{ url_for('change_status', quote_no=record.quote.quote_no) }}" class="d-inline-flex flex-wrap gap-1">
+    <input type="hidden" name="current" value="{{ record.status }}">
+    <input type="hidden" name="return_to" value="{{ return_to }}">
+    <input type="hidden" name="q" value="{{ q }}">
+    <input type="hidden" name="page" value="{{ page }}">
+    {% if record.status == 'open' %}
+      {% for value in ('won', 'lost', 'void') %}
+        <button class="btn btn-sm btn-outline-secondary" name="status" value="{{ value }}">{{ statuses[value] }}</button>
+      {% endfor %}
+    {% else %}
+      <button class="btn btn-sm btn-outline-secondary" name="status" value="open">改回{{ statuses['open'] }}</button>
+    {% endif %}
+  </form>
+{%- endmacro %}

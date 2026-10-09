@@ -8,7 +8,16 @@
         integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
 </head>
 <body class="bg-light">
-<main class="container py-4" style="max-width: 760px">
+<nav class="navbar navbar-expand bg-white border-bottom">
+  <div class="container" style="max-width: {% block width %}760px{% endblock %}">
+    <a class="navbar-brand fw-semibold" href="{{ url_for('index') }}">聖大國際報價單</a>
+    <div class="navbar-nav">
+      <a class="nav-link{% if request.endpoint in ('index', 'copy_quote', 'generate') %} active{% endif %}" href="{{ url_for('index') }}">新增報價</a>
+      <a class="nav-link{% if request.endpoint in ('quote_list', 'quote_detail') %} active{% endif %}" href="{{ url_for('quote_list') }}">歷史報價</a>
+    </div>
+  </div>
+</nav>
+<main class="container py-4" style="max-width: {{ self.width() }}">
   {% block content %}{% endblock %}
 </main>
 {% block scripts %}{% endblock %}
