@@ -136,3 +136,10 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+# macOS
+.DS_Store
+
+# 產生的報價單（含客戶資料，不要進版控）
+output/
+/output.xlsx
+/*報價單*.pdf
