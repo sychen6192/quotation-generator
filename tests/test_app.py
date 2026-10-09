@@ -79,8 +79,12 @@ def test_generate_and_download(client, fake_pdf, valid_form, tmp_path):
     assert xlsx.status_code == 200
     assert xlsx.data[:2] == b'PK'
 
+    assert "UTF-8''%E6%B8%AC%E8%A9%A6" in pdf.headers['Content-Disposition']  # 下載檔名是「測試…報價單0716.pdf」
+    assert '0716.pdf' in pdf.headers['Content-Disposition']
     job_dir, = tmp_path.iterdir()
-    assert sorted(p.name for p in job_dir.iterdir()) == ['測試股份有限公司報價單0716.pdf', '測試股份有限公司報價單0716.xlsx']
+    # 磁碟上只用 ASCII 檔名，中文名稱另外存
+    assert sorted(p.name for p in job_dir.iterdir()) == ['name.txt', 'quotation.pdf', 'quotation.xlsx']
+    assert (job_dir / 'name.txt').read_text(encoding='utf-8') == '測試股份有限公司報價單0716'
 
 
 def test_each_request_gets_its_own_files(client, fake_pdf, valid_form, tmp_path):
@@ -210,3 +214,36 @@ def test_login_when_configured(client, monkeypatch, credentials, expected):
         assert response.headers['WWW-Authenticate'].startswith('Basic')
     # 下載頁也一樣受保護
     assert client.get('/download/' + '0' * 32 + '/pdf', auth=credentials).status_code == (401 if expected == 401 else 404)
+
+
+def test_relative_output_dir_downloads_work(client, fake_pdf, valid_form, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(main.app.config, 'OUTPUT_DIR', 'relative-out')
+    links = download_links(client.post('/generate', data=valid_form))
+    assert links and all(client.get(link).status_code == 200 for link in links)
+    assert (tmp_path / 'relative-out').is_dir()
+
+
+def test_workbook_failure_shows_form_and_cleans_up(client, fake_pdf, valid_form, tmp_path, monkeypatch):
+    def broken(quote):
+        raise OSError('disk full')
+    monkeypatch.setattr(main.q, 'build_workbook', broken)
+    response = client.post('/generate', data=valid_form)
+    assert response.status_code == 500
+    assert '產生報價單失敗' in response.get_data(as_text=True)
+    assert 'value="江美志"' in response.get_data(as_text=True)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_money_rounds_half_up_like_excel():
+    from decimal import Decimal
+    assert main.money(Decimal('0.125')) == '0.13'
+    assert main.money(Decimal('11.025')) == '11.03'
+    assert main.money(Decimal('1234567.5')) == '1,234,567.50'
+
+
+def test_textarea_keeps_leading_blank_line(client, valid_form):
+    response = client.post('/generate', data=dict(valid_form, product='\r\n壞掉的一行'))
+    html = response.get_data(as_text=True)
+    assert '品項第 2 行' in html
+    assert 'placeholder="電腦主機,2,5500&#10;加購記憶體,2,400">\n\r\n壞掉的一行</textarea>' in html

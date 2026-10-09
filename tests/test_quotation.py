@@ -45,6 +45,9 @@ def test_tax_included_adds_no_tax(valid_form):
     ('A,1.5,12.25', [('A', Decimal('1.5'), Decimal('12.25'))]),
     ('A,1,$100', [('A', 1, 100)]),
     ('A,1,0', [('A', 1, 0)]),
+    ('A,2,100\n折扣,1,-50', [('A', 2, 100), ('折扣', 1, -50)]),   # 單價負數 = 折扣列
+    ('A,1,-0', [('A', 1, 0)]),
+    ('A,1,999999999999.9999', [('A', 1, Decimal('999999999999.9999'))]),
     ('A,1,2\n\n   \nB,3,4\n', [('A', 1, 2), ('B', 3, 4)]),
     ('A,1,2\r\nB,3,4', [('A', 1, 2), ('B', 3, 4)]),
 ])
@@ -64,7 +67,11 @@ def test_parse_products(raw, expected):
     ('A,0,2', '數量'),
     ('A,-1,2', '數量'),
     ('A,1,abc', '價格'),
-    ('A,1,-5', '價格'),
+    ('A,1,-5', '合計不可小於 0'),
+    ('A,1e400,1', '數量'),
+    ('A,1,1e999999', '價格'),
+    ('A,1,1000000000000', '價格'),
+    ('A,1,0.00001', '價格'),
     ('A,NaN,5', '數量'),
     ('A,1,Infinity', '價格'),
     ('筆電,2,1,000', '不要寫成 1,000'),     # 千分位逗號不能默默變成單價 1
@@ -201,8 +208,14 @@ def test_build_workbook_keeps_stamp_image(valid_form, tmp_path):
     assert len(sheet._images) == 1
 
 
+def test_negative_zero_becomes_zero():
+    errors = []
+    product, = q.parse_products('A,1,-0.00', errors)
+    assert not product.price.is_signed() and not product.amount.is_signed()
+
+
 def test_control_characters_are_removed(valid_form):
-    quote = parse(dict(valid_form, cname='江\x00美志', note='第一行\x0b第二行\x0c第三行', product='A\x01B,1,2'))
+    quote = parse(dict(valid_form, cname='江\x00美\uffff志\ufffe', note='第一行\x0b第二行\x0c第三行', product='A\x01B,1,2'))
     assert quote.customer_name == '江美志'
     assert quote.note == '第一行\n第二行\n第三行'
     assert quote.products[0].name == 'AB'

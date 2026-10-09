@@ -1,8 +1,12 @@
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import types
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -108,13 +112,39 @@ def test_libreoffice_missing(monkeypatch, tmp_path):
         pdf_export.export_pdf(tmp_path / 'a.xlsx', tmp_path / 'a.pdf', backend='libreoffice')
 
 
-def test_libreoffice_timeout(monkeypatch, tmp_path):
-    monkeypatch.setenv('SOFFICE_PATH', '/fake/soffice')
+@pytest.mark.skipif(os.name != 'posix', reason='用 shell script 模擬 soffice')
+def test_libreoffice_timeout_kills_child_processes(monkeypatch, tmp_path):
+    # 模擬 soffice 啟動腳本再開出真正做事的子程序（soffice.bin）
+    child_pid_file = tmp_path / 'child.pid'
+    fake = tmp_path / 'soffice'
+    fake.write_text(f'#!/bin/sh\nsleep 300 &\necho $! > {child_pid_file}\nwait\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv('SOFFICE_PATH', str(fake))
+    monkeypatch.setattr(pdf_export, 'LIBREOFFICE_TIMEOUT_SECONDS', 1)
+    before = set(Path(tempfile.gettempdir()).glob('quotation-pdf-*'))
 
-    def timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired(args[0], 1)
-    monkeypatch.setattr(pdf_export.subprocess, 'run', timeout)
-    with pytest.raises(pdf_export.PdfExportError):
+    with pytest.raises(pdf_export.PdfExportError, match='超過'):
+        pdf_export.export_pdf(tmp_path / 'a.xlsx', tmp_path / 'a.pdf', backend='libreoffice')
+
+    child_pid = int(child_pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail('soffice 的子程序沒有被結束')
+    assert set(Path(tempfile.gettempdir()).glob('quotation-pdf-*')) == before  # 暫存資料夾有清掉
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='用 shell script 模擬 soffice')
+def test_libreoffice_not_producing_pdf(monkeypatch, tmp_path):
+    fake = tmp_path / 'soffice'
+    fake.write_text('#!/bin/sh\necho broken\nexit 1\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv('SOFFICE_PATH', str(fake))
+    with pytest.raises(pdf_export.PdfExportError, match='沒有產生 PDF'):
         pdf_export.export_pdf(tmp_path / 'a.xlsx', tmp_path / 'a.pdf', backend='libreoffice')
 
 

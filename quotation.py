@@ -35,15 +35,20 @@ TAX_RATE = Decimal('0.05')  # 要和範本 G35 的稅率一致
 # 備註寫在合併後的 C16:G18；品名寫在 C:D 合併儲存格，太長時自動換行加高該列。
 # 寬度以半形字元計（中文字算 2），抓得比實際保守，避免 PDF 上被截掉。
 NOTE_RANGE = 'C16:G18'
-NOTE_LINE_WIDTH = 70
-PRODUCT_NAME_LINE_WIDTH = 28
+NOTE_LINE_WIDTH = 60          # C16 是等寬字型，一行實際約 69 個半形字
+PRODUCT_NAME_LINE_WIDTH = 24  # 大寫英文字比較寬，一行實際約 25~28 個半形字
 MAX_WRAPPED_LINES = 3
 
 MAX_TEXT_LENGTH = 200
+# 數量、單價的範圍：太大的數字 Excel 存不下（而且 int(Decimal('1e999999')) 要算好幾秒）
+MAX_NUMBER = Decimal('1e12')
+MAX_DECIMALS = 4
+_NUMBER_HINT = f'（小於 1 兆，最多 {MAX_DECIMALS} 位小數）'
 MAX_NOTE_LENGTH = 300
 
 # 只接受剛好三欄；千分位逗號（1,000）或名稱裡的逗號都會被擋下，不會默默算錯
 _PRODUCT_SEPARATOR = re.compile('[,，]')
+_XML_ILLEGAL_CHARACTERS = re.compile('[\ufffe\uffff]')
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 Number = Union[int, float]
@@ -115,7 +120,7 @@ def today_in_taiwan() -> date:
 def clean_text(value: str) -> str:
     """移除 Excel 不接受的控制字元（例如從 Word 貼上的 \\v 換行），否則存檔會失敗。"""
     value = value.replace('\v', '\n').replace('\f', '\n')
-    return ILLEGAL_CHARACTERS_RE.sub('', value)
+    return _XML_ILLEGAL_CHARACTERS.sub('', ILLEGAL_CHARACTERS_RE.sub('', value))
 
 
 def display_width(text: str) -> int:
@@ -218,9 +223,10 @@ def parse_products(raw: str, errors: List[str]) -> List[Product]:
         if wrapped_lines(name, PRODUCT_NAME_LINE_WIDTH) > MAX_WRAPPED_LINES:
             errors.append(f'品項第 {line_no} 行的商品名稱太長，報價單上最多只能放 {MAX_WRAPPED_LINES} 行')
         elif quantity is None or quantity <= 0:
-            errors.append(f'品項第 {line_no} 行的數量「{quantity_raw}」必須是大於 0 的數字')
-        elif price is None or price < 0:
-            errors.append(f'品項第 {line_no} 行的價格「{price_raw}」必須是數字')
+            errors.append(f'品項第 {line_no} 行的數量「{quantity_raw}」必須是大於 0 的數字{_NUMBER_HINT}')
+        elif price is None:
+            # 單價可以是負數：用來寫「折扣,1,-500」這種折讓列
+            errors.append(f'品項第 {line_no} 行的價格「{price_raw}」必須是數字{_NUMBER_HINT}')
         else:
             products.append(Product(name, quantity, price))
 
@@ -228,6 +234,8 @@ def parse_products(raw: str, errors: List[str]) -> List[Product]:
         errors.append('請至少輸入一個品項')
     elif len(products) > MAX_PRODUCTS:
         errors.append(f'品項最多 {MAX_PRODUCTS} 項（範本只有 {MAX_PRODUCTS} 列），目前有 {len(products)} 項')
+    elif sum(p.amount for p in products) < 0:
+        errors.append('品項合計不可小於 0，請檢查折扣列')
     return products
 
 
@@ -236,7 +244,12 @@ def _parse_number(raw: str) -> Optional[Decimal]:
         value = Decimal(raw.strip().replace('$', ''))
     except InvalidOperation:
         return None
-    return value if value.is_finite() else None
+    # copy_abs() 不受 decimal context 限制，超大指數也不會丟 Overflow
+    if not value.is_finite() or value.copy_abs() >= MAX_NUMBER:
+        return None
+    if value.normalize().as_tuple().exponent < -MAX_DECIMALS:
+        return None
+    return value.copy_abs() if value.is_zero() else value  # 不要出現 -0
 
 
 def _excel_number(value: Decimal) -> Number:
