@@ -1,0 +1,7 @@
+Flask>=2.2,<4
+openpyxl>=3.1,<4
+# openpyxl 要有 Pillow 才會保留範本裡的發票章圖片，少了它圖片會被默默丟掉
+Pillow>=9.0
+requests>=2.28,<3
+# Windows 用 Excel 轉 PDF；其他平台改用 LibreOffice，不需要這個
+pywin32>=305; sys_platform == "win32"
