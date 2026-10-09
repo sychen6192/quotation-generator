@@ -189,3 +189,24 @@ def test_expired_outputs_are_removed(client, fake_pdf, valid_form, tmp_path):
 def test_request_too_large(client):
     response = client.post('/generate', data={'note': 'x' * (main.app.config['MAX_CONTENT_LENGTH'] + 1)})
     assert response.status_code == 413
+
+
+def test_login_not_required_by_default(client):
+    assert client.get('/').status_code == 200
+
+
+@pytest.mark.parametrize('credentials, expected', [
+    (None, 401),
+    (('admin', 'wrong'), 401),
+    (('someone', '密碼'), 401),
+    (('admin', '密碼'), 200),
+])
+def test_login_when_configured(client, monkeypatch, credentials, expected):
+    monkeypatch.setitem(main.app.config, 'USERNAME', 'admin')
+    monkeypatch.setitem(main.app.config, 'PASSWORD', '密碼')
+    response = client.get('/', auth=credentials)
+    assert response.status_code == expected
+    if expected == 401:
+        assert response.headers['WWW-Authenticate'].startswith('Basic')
+    # 下載頁也一樣受保護
+    assert client.get('/download/' + '0' * 32 + '/pdf', auth=credentials).status_code == (401 if expected == 401 else 404)

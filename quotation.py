@@ -1,6 +1,7 @@
 """報價單：解析表單資料、套用 Excel 範本。"""
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -10,7 +11,10 @@ from pathlib import Path
 from typing import List, Mapping, Optional, Union
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from openpyxl.styles import Alignment
 from openpyxl.workbook import Workbook
+from openpyxl.worksheet.properties import PageSetupProperties
 
 TEMPLATE_PATH = Path(__file__).with_name('template.xlsx')
 SHEET_NAME = '报价单'
@@ -28,15 +32,18 @@ FIRST_PRODUCT_ROW = 24
 MAX_PRODUCTS = 10
 TAX_RATE = Decimal('0.05')  # 要和範本 G35 的稅率一致
 
-MAX_TEXT_LENGTH = 200
-MAX_NOTE_LENGTH = 1000
+# 備註寫在合併後的 C16:G18；品名寫在 C:D 合併儲存格，太長時自動換行加高該列。
+# 寬度以半形字元計（中文字算 2），抓得比實際保守，避免 PDF 上被截掉。
+NOTE_RANGE = 'C16:G18'
+NOTE_LINE_WIDTH = 70
+PRODUCT_NAME_LINE_WIDTH = 28
+MAX_WRAPPED_LINES = 3
 
-_PRODUCT_SEPARATOR = '[,，|]'
-# 名稱可以含逗號：只把最後兩個欄位當成數量和價格
-_PRODUCT_LINE = re.compile(
-    rf'(?P<name>.+?)\s*{_PRODUCT_SEPARATOR}\s*(?P<quantity>[^,，|]+?)'
-    rf'\s*{_PRODUCT_SEPARATOR}\s*(?P<price>[^,，|]+?)'
-)
+MAX_TEXT_LENGTH = 200
+MAX_NOTE_LENGTH = 300
+
+# 只接受剛好三欄；千分位逗號（1,000）或名稱裡的逗號都會被擋下，不會默默算錯
+_PRODUCT_SEPARATOR = re.compile('[,，]')
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 Number = Union[int, float]
@@ -105,12 +112,27 @@ def today_in_taiwan() -> date:
     return datetime.now(TAIPEI).date()
 
 
+def clean_text(value: str) -> str:
+    """移除 Excel 不接受的控制字元（例如從 Word 貼上的 \\v 換行），否則存檔會失敗。"""
+    value = value.replace('\v', '\n').replace('\f', '\n')
+    return ILLEGAL_CHARACTERS_RE.sub('', value)
+
+
+def display_width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(ch) in 'WF' else 1 for ch in text)
+
+
+def wrapped_lines(text: str, line_width: int) -> int:
+    """在 line_width 寬的儲存格裡換行後大約會佔幾行。"""
+    return sum(max(1, math.ceil(display_width(line) / line_width)) for line in text.splitlines() or [''])
+
+
 def parse_form(form: Mapping[str, str], today: Optional[date] = None) -> Quotation:
     """驗證並轉換表單；有任何錯誤就一次全部丟出 QuotationError。"""
     errors: List[str] = []
 
     def text(key: str, label: str, required: bool = False, max_length: int = MAX_TEXT_LENGTH) -> str:
-        value = (form.get(key) or '').strip()
+        value = clean_text(form.get(key) or '').strip()
         if required and not value:
             errors.append(f'請填寫{label}')
         elif len(value) > max_length:
@@ -131,6 +153,8 @@ def parse_form(form: Mapping[str, str], today: Optional[date] = None) -> Quotati
     company_name = text('companyName', '公司名稱')
     company_address = text('companyAddress', '公司地址')
     note = text('note', '備註', max_length=MAX_NOTE_LENGTH)
+    if wrapped_lines(note, NOTE_LINE_WIDTH) > MAX_WRAPPED_LINES:
+        errors.append(f'備註太長，報價單上最多只能放 {MAX_WRAPPED_LINES} 行')
 
     seller = choice('seller', '銷售員', SELLERS)
     delivery_method = choice('delivery', '發貨方式', DELIVERY_METHODS)
@@ -153,7 +177,7 @@ def parse_form(form: Mapping[str, str], today: Optional[date] = None) -> Quotati
         except ValueError:
             errors.append('預計出貨日格式錯誤，請用 YYYY-MM-DD')
 
-    products = parse_products(form.get('product') or '', errors)
+    products = parse_products(clean_text(form.get('product') or ''), errors)
 
     if errors:
         raise QuotationError(errors)
@@ -183,19 +207,20 @@ def parse_products(raw: str, errors: List[str]) -> List[Product]:
         line = line.strip()
         if not line:
             continue
-        match = _PRODUCT_LINE.fullmatch(line)
-        if not match:
-            errors.append(f'品項第 {line_no} 行「{line}」格式錯誤，請用「商品名稱,數量,價格」')
+        fields = [field.strip() for field in _PRODUCT_SEPARATOR.split(line)]
+        if len(fields) != 3 or not fields[0]:
+            errors.append(f'品項第 {line_no} 行「{line}」格式錯誤，請用「商品名稱,數量,價格」，'
+                          '名稱和金額裡不要再用逗號（例如 1000 不要寫成 1,000）')
             continue
-        name = match['name'].strip()
-        quantity = _parse_number(match['quantity'])
-        price = _parse_number(match['price'])
-        if len(name) > MAX_TEXT_LENGTH:
-            errors.append(f'品項第 {line_no} 行的商品名稱太長')
+        name, quantity_raw, price_raw = fields
+        quantity = _parse_number(quantity_raw)
+        price = _parse_number(price_raw)
+        if wrapped_lines(name, PRODUCT_NAME_LINE_WIDTH) > MAX_WRAPPED_LINES:
+            errors.append(f'品項第 {line_no} 行的商品名稱太長，報價單上最多只能放 {MAX_WRAPPED_LINES} 行')
         elif quantity is None or quantity <= 0:
-            errors.append(f'品項第 {line_no} 行的數量「{match["quantity"]}」必須是大於 0 的數字')
+            errors.append(f'品項第 {line_no} 行的數量「{quantity_raw}」必須是大於 0 的數字')
         elif price is None or price < 0:
-            errors.append(f'品項第 {line_no} 行的價格「{match["price"]}」必須是數字')
+            errors.append(f'品項第 {line_no} 行的價格「{price_raw}」必須是數字')
         else:
             products.append(Product(name, quantity, price))
 
@@ -242,6 +267,11 @@ def build_workbook(quotation: Quotation, template: Path = TEMPLATE_PATH) -> Work
         put_text('B12', f'公司地址：{quotation.company_address}')
     put_text('B13', f'公司電話：{quotation.phone}')
     put_text('C16', quotation.note or '無')
+    # 備註可能多行：合併 C16:G18 並自動換行，原本單一儲存格只會擠成一行、超出列印範圍
+    sheet.merge_cells(NOTE_RANGE)
+    sheet['C16'].alignment = Alignment(wrap_text=True, vertical='top')
+    for row in range(16, 19):
+        sheet.row_dimensions[row].height = 15  # 預設 12.75 放三行字會壓到下面的表格框線
 
     put_text('B20', quotation.seller)
     put_text('C20', f'{quotation.ship_date:%Y/%m/%d}' if quotation.ship_date else '-')
@@ -255,10 +285,22 @@ def build_workbook(quotation: Quotation, template: Path = TEMPLATE_PATH) -> Work
     for row, product in enumerate(quotation.products, start=FIRST_PRODUCT_ROW):
         sheet[f'B{row}'] = _excel_number(product.quantity)
         put_text(f'C{row}', product.name)
+        lines = wrapped_lines(product.name, PRODUCT_NAME_LINE_WIDTH)
+        if lines > 1:
+            # 合併儲存格不會自動調整列高，要自己加高
+            name_cell = sheet[f'C{row}']
+            name_cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            dimension = sheet.row_dimensions[row]
+            dimension.height = (dimension.height or 20.1) * lines
         sheet[f'E{row}'] = _excel_number(product.price)
         # 範本的稅額公式只對 F 欄標 T 的列加 5%；含稅價格就不標
         if not quotation.tax_included:
             put_text(f'F{row}', 'T')
+
+    # 品名換行加高後仍然縮印在一頁內（只會縮小、不會放大）
+    sheet.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 1
 
     # openpyxl 不會計算公式，要求開啟檔案時重新計算
     wb.calculation.fullCalcOnLoad = True

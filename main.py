@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 import re
@@ -7,7 +8,7 @@ import uuid
 from decimal import Decimal
 from pathlib import Path
 
-from flask import Flask, abort, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, abort, redirect, render_template, request, send_file, url_for
 
 import quotation as q
 from company import lookup_company
@@ -21,6 +22,9 @@ app.config.update(
     OUTPUT_DIR=Path(os.environ.get('QUOTATION_OUTPUT_DIR') or Path(__file__).with_name('output')),
     OUTPUT_TTL_SECONDS=24 * 60 * 60,  # 產生的檔案保留一天
     MAX_CONTENT_LENGTH=64 * 1024,
+    # 兩個都設定時整個網站需要帳號密碼（HTTP Basic Auth，請搭配 HTTPS）
+    USERNAME=os.environ.get('QUOTATION_USERNAME'),
+    PASSWORD=os.environ.get('QUOTATION_PASSWORD'),
 )
 
 # 下拉選單的 (value, 顯示文字)
@@ -44,6 +48,19 @@ def money(value: Decimal) -> str:
 @app.template_filter('number')
 def number(value: Decimal) -> str:
     return f'{value.normalize():,f}'
+
+
+@app.before_request
+def require_login():
+    username, password = app.config['USERNAME'], app.config['PASSWORD']
+    if not (username and password):
+        return None
+    auth = request.authorization
+    if (auth and auth.type == 'basic'
+            and hmac.compare_digest((auth.username or '').encode(), username.encode())
+            and hmac.compare_digest((auth.password or '').encode(), password.encode())):
+        return None
+    return Response('需要登入', 401, {'WWW-Authenticate': 'Basic realm="quotation", charset="UTF-8"'})
 
 
 def render_form(form=None, errors=(), status=200):

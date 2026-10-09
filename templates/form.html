@@ -59,7 +59,7 @@
       <label class="form-label" for="product">品項（一行一項，最多 {{ max_products }} 項） <span class="text-danger">*</span></label>
       <textarea class="form-control font-monospace" id="product" name="product" rows="5" required
                 aria-describedby="product-help" placeholder="電腦主機,2,5500&#10;加購記憶體,2,400">{{ form.get('product', '') }}</textarea>
-      <div class="form-text" id="product-help">格式：商品名稱,數量,單價（逗號可用全形「，」）</div>
+      <div class="form-text" id="product-help">格式：商品名稱,數量,單價（逗號可用全形「，」）。名稱和金額裡不要再用逗號，1000 不要寫成 1,000。</div>
     </div>
     {{ select('tax', '稅金', tax_options) }}
     {{ select('vday', '報價有效天數', valid_days) }}
@@ -76,7 +76,8 @@
     {{ select('cash', '付款方式', payment_methods) }}
     <div class="col-12">
       <label class="form-label" for="note">備註</label>
-      <textarea class="form-control" id="note" name="note" rows="2" maxlength="1000">{{ form.get('note', '') }}</textarea>
+      <textarea class="form-control" id="note" name="note" rows="3" maxlength="300" aria-describedby="note-help">{{ form.get('note', '') }}</textarea>
+      <div class="form-text" id="note-help">報價單上最多放 3 行</div>
     </div>
   </fieldset>
 

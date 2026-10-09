@@ -40,9 +40,8 @@ def test_tax_included_adds_no_tax(valid_form):
 @pytest.mark.parametrize('raw, expected', [
     ('A,1,2', [('A', 1, 2)]),
     ('A，1，2', [('A', 1, 2)]),
-    ('A|1|2', [('A', 1, 2)]),
+    ('A|B 規格,1,100', [('A|B 規格', 1, 100)]),
     ('  A , 1 , 2  ', [('A', 1, 2)]),
-    ('主機, 含螢幕,2,100', [('主機, 含螢幕', 2, 100)]),
     ('A,1.5,12.25', [('A', Decimal('1.5'), Decimal('12.25'))]),
     ('A,1,$100', [('A', 1, 100)]),
     ('A,1,0', [('A', 1, 0)]),
@@ -68,6 +67,10 @@ def test_parse_products(raw, expected):
     ('A,1,-5', '價格'),
     ('A,NaN,5', '數量'),
     ('A,1,Infinity', '價格'),
+    ('筆電,2,1,000', '不要寫成 1,000'),     # 千分位逗號不能默默變成單價 1
+    ('主機, 含螢幕,2,100', '第 1 行'),
+    (',1,2', '第 1 行'),
+    ('中' * 43 + ',1,1', '商品名稱太長'),
 ])
 def test_parse_products_errors(raw, message):
     errors = []
@@ -185,7 +188,7 @@ def test_build_workbook_without_company(valid_form, tmp_path):
 
 
 def test_user_input_never_becomes_a_formula(valid_form, tmp_path):
-    payload = '=HYPERLINK("http://evil","x")'
+    payload = '=HYPERLINK("http://evil")'
     _, sheet = build_sheet(dict(valid_form, note=payload, product=f'{payload},1,1'), tmp_path)
     for cell in (sheet['C16'], sheet['C24']):
         assert cell.value == payload
@@ -196,6 +199,41 @@ def test_build_workbook_keeps_stamp_image(valid_form, tmp_path):
     pytest.importorskip('PIL')  # 沒有 Pillow 時 openpyxl 會直接丟掉範本裡的圖片
     _, sheet = build_sheet(valid_form, tmp_path)
     assert len(sheet._images) == 1
+
+
+def test_control_characters_are_removed(valid_form):
+    quote = parse(dict(valid_form, cname='江\x00美志', note='第一行\x0b第二行\x0c第三行', product='A\x01B,1,2'))
+    assert quote.customer_name == '江美志'
+    assert quote.note == '第一行\n第二行\n第三行'
+    assert quote.products[0].name == 'AB'
+
+
+def test_note_must_fit_three_lines(valid_form):
+    assert parse(dict(valid_form, note='一\n二\n三')).note == '一\n二\n三'
+    assert any('備註太長' in e for e in errors_of(dict(valid_form, note='一\n二\n三\n四')))
+    assert any('備註太長' in e for e in errors_of(dict(valid_form, note='字' * 120)))
+
+
+def test_wrapped_lines():
+    assert q.display_width('ab中文') == 6
+    assert q.wrapped_lines('', 10) == 1
+    assert q.wrapped_lines('a' * 10, 10) == 1
+    assert q.wrapped_lines('a' * 11, 10) == 2
+    assert q.wrapped_lines('中' * 6 + '\n\nx', 10) == 4
+
+
+def test_build_workbook_note_and_long_names_wrap(valid_form, tmp_path):
+    long_name = '工業用不鏽鋼六角螺絲 M3x10mm 304材質 (100入/包)'
+    _, sheet = build_sheet(dict(valid_form, note='一\n二', product=f'{long_name},1,1\n短,1,1'), tmp_path)
+    assert 'C16:G18' in {str(r) for r in sheet.merged_cells.ranges}
+    assert sheet['C16'].value == '一\n二'
+    assert sheet['C16'].alignment.wrap_text
+    assert sheet['C24'].alignment.wrap_text
+    assert sheet.row_dimensions[24].height == pytest.approx(20.1 * q.wrapped_lines(long_name, q.PRODUCT_NAME_LINE_WIDTH))
+    assert sheet.row_dimensions[25].height == pytest.approx(20.1)
+    assert not sheet['C25'].alignment.wrap_text
+    assert sheet.sheet_properties.pageSetUpPr.fitToPage
+    assert (sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight) == (1, 1)
 
 
 def test_full_width_tax_id_is_normalized(valid_form):
