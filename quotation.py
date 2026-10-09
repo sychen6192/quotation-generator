@@ -55,8 +55,10 @@ CENT = Decimal('0.01')
 DOLLAR = Decimal('1')
 
 # 和發票一樣：每列金額四捨五入到分，營業稅四捨五入到元（Excel 的 ROUND 也是四捨五入）
+# 加總也要先 ROUND 到分：Excel 用浮點數相加，157.5 可能變成 157.49999999 而少算 1 元稅
 LINE_AMOUNT_FORMULA = '=ROUND(B{row}*E{row},2)'
-TAX_EXCLUDED_FORMULA = '=ROUND(G35*SUMIF(F24:F33,"T",G24:G33),0)'
+SUBTOTAL_FORMULA = '=ROUND(SUM(G24:G33),2)'
+TAX_EXCLUDED_FORMULA = '=ROUND(G35*ROUND(SUMIF(F24:F33,"T",G24:G33),2),0)'
 TAX_INCLUDED_FORMULA = f'=ROUND((G34+G37)*{TAX_PERCENT}/{100 + TAX_PERCENT},0)'
 TOTAL_EXCLUDED_FORMULA = '=G34+G36+G37'
 TOTAL_INCLUDED_FORMULA = '=G34+G37'  # 含稅：稅額已經在小計裡，不能再加一次
@@ -69,10 +71,11 @@ PRODUCT_NAME_LINE_WIDTH = 24  # 大寫英文字比較寬，一行實際約 25~28
 MAX_WRAPPED_LINES = 3
 
 MAX_TEXT_LENGTH = 200
-# 數量、單價的範圍：太大的數字 Excel 存不下（而且 int(Decimal('1e999999')) 要算好幾秒）
-MAX_NUMBER = Decimal('1e12')
+# 數量、單價、每列金額、總計都要小於 1 億：再大報價單的欄位會印成 ###
+#（也擋掉 int(Decimal('1e999999')) 這種要算好幾秒的輸入）
+MAX_NUMBER = Decimal('1e8')
 MAX_DECIMALS = 4
-_NUMBER_HINT = f'（小於 1 兆，最多 {MAX_DECIMALS} 位小數）'
+_NUMBER_HINT = f'（小於 1 億，最多 {MAX_DECIMALS} 位小數）'
 MAX_NOTE_LENGTH = 300
 
 # 只接受剛好三欄；千分位逗號（1,000）或名稱裡的逗號都會被擋下，不會默默算錯
@@ -345,6 +348,9 @@ def parse_products(raw: str, errors: List[str]) -> List[Product]:
         errors.append(f'品項最多 {MAX_PRODUCTS} 項（範本只有 {MAX_PRODUCTS} 列），目前有 {len(products)} 項')
     elif sum((p.amount for p in products), Decimal(0)) < 0:
         errors.append('品項合計不可小於 0，請檢查折扣列')
+    elif (any(p.amount.copy_abs() >= MAX_NUMBER for p in products)
+          or compute_totals(products, False).total >= MAX_NUMBER):
+        errors.append('金額太大：每列金額和總計（含稅）都要小於 1 億')
     return products
 
 
@@ -423,6 +429,10 @@ def build_workbook(quotation: Quotation, template: Path = TEMPLATE_PATH) -> Work
         for column in 'BCEF':
             sheet[f'{column}{row}'].value = None
         sheet[f'G{row}'] = LINE_AMOUNT_FORMULA.format(row=row)
+        # 單價最多 4 位小數：範本只顯示 2 位，0.125 會印成 0.13，數量 × 單價就對不上金額
+        unit_price = sheet[f'E{row}']
+        unit_price.number_format = unit_price.number_format.replace('#,##0.00', '#,##0.00##')
+    sheet['G34'] = SUBTOTAL_FORMULA
     for row, product in enumerate(quotation.products, start=FIRST_PRODUCT_ROW):
         sheet[f'B{row}'] = _excel_number(product.quantity)
         put_text(f'C{row}', product.name)

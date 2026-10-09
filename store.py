@@ -59,6 +59,7 @@ STATUSES = {'open': '已報價', 'won': '已成交', 'lost': '未成交', 'void'
 _ALLOWED_TRANSITIONS = {('open', s) for s in STATUSES if s != 'open'} | {(s, 'open') for s in STATUSES if s != 'open'}
 
 PAGE_SIZE = 25
+MAX_KEYWORDS = 20  # 每個關鍵字多一組 SQL 條件，太多會超過 SQLite 的上限
 
 
 class StatusConflict(Exception):
@@ -152,7 +153,7 @@ def search_quotes(conn: sqlite3.Connection, keywords: str = '', page: int = 1
                   ) -> Tuple[List[QuoteRecord], int]:
     """依單號、客戶、公司、統編、電話或品名搜尋；多個關鍵字要全部符合。回傳 (這頁的資料, 總筆數)。"""
     where, params = [], []
-    for keyword in keywords.split():
+    for keyword in list(dict.fromkeys(keywords.split()))[:MAX_KEYWORDS]:
         pattern = _like(keyword)
         where.append(
             "((quote_no || ' ' || customer_name || ' ' || company_name || ' ' || tax_id || ' ' || phone)"
@@ -178,10 +179,10 @@ def set_status(conn: sqlite3.Connection, quote_no: str, current: str, new: str) 
 
 
 def find_customer(conn: sqlite3.Connection, tax_id: str) -> Optional[Dict[str, str]]:
-    """這個統編最近一次報價的客戶資料。"""
+    """這個統編最近一次報價的客戶資料（作廢的不算，通常是打錯了）。"""
     row = conn.execute(
         """SELECT quote_no, quote_date, customer_name, phone, company_name, company_address
-           FROM quotes WHERE tax_id = ? ORDER BY id DESC LIMIT 1""", (tax_id,)).fetchone()
+           FROM quotes WHERE tax_id = ? AND status != 'void' ORDER BY id DESC LIMIT 1""", (tax_id,)).fetchone()
     if not row:
         return None
     return {'quote_no': row['quote_no'], 'quote_date': row['quote_date'], 'cname': row['customer_name'],

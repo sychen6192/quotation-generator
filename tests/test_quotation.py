@@ -111,7 +111,7 @@ def test_preview():
     ('A,2,100\n折扣,1,-50', [('A', 2, 100), ('折扣', 1, -50)]),   # 單價負數 = 折扣列
     ('運費,1,150', [('運費', 1, 150)]),
     ('A,1,-0', [('A', 1, 0)]),
-    ('A,1,999999999999.9999', [('A', 1, Decimal('999999999999.9999'))]),
+    ('A,1,95000000.1234', [('A', 1, Decimal('95000000.1234'))]),   # 含稅後 99,750,000 < 1 億
     ('A,1,2\n\n   \nB,3,4\n', [('A', 1, 2), ('B', 3, 4)]),
     ('A,1,2\r\nB,3,4', [('A', 1, 2), ('B', 3, 4)]),
 ])
@@ -135,6 +135,11 @@ def test_parse_products(raw, expected):
     ('A,1e400,1', '數量'),
     ('A,1,1e999999', '價格'),
     ('A,1,1000000000000', '價格'),
+    ('A,1,100000000', '價格'),                      # 單價要小於 1 億（再大報價單會印成 ###）
+    ('A,100000000,1', '數量'),
+    ('A,1000,100000', '金額太大'),                  # 每列金額 1 億
+    ('A,1,99999999', '金額太大'),                   # 加稅後總計超過 1 億
+    ('A,2,60000000\n折扣,1,-50000000', '金額太大'),  # 合計不大，但有一列超過 1 億
     ('A,1,0.00001', '價格'),
     ('A,NaN,5', '數量'),
     ('A,1,Infinity', '價格'),
@@ -235,12 +240,17 @@ def test_build_workbook_products_are_numbers_and_formulas_kept(valid_form, tmp_p
     assert [sheet[f'{c}26'].value for c in 'BCEF'] == [None] * 4
     # 每列四捨五入到分、稅額四捨五入到元
     assert [sheet[f'G{r}'].value for r in (24, 33)] == ['=ROUND(B24*E24,2)', '=ROUND(B33*E33,2)']
-    assert sheet['G34'].value == '=SUM(G24:G33)'
+    # 加總先四捨五入到分，浮點誤差才不會讓稅額少 1 元
+    assert sheet['G34'].value == '=ROUND(SUM(G24:G33),2)'
     assert sheet['F36'].value == '稅額'
-    assert sheet['G36'].value == '=ROUND(G35*SUMIF(F24:F33,"T",G24:G33),0)'
+    assert sheet['G36'].value == '=ROUND(G35*ROUND(SUMIF(F24:F33,"T",G24:G33),2),0)'
     assert sheet['G38'].value == '=G34+G36+G37'
     # 換掉公式不會弄丟範本的金額格式（第一列有 $ 符號）
     assert '$' in sheet['G24'].number_format and '$' not in sheet['G25'].number_format
+    assert '$' in sheet['G34'].number_format
+    # 單價最多顯示 4 位小數（0.125 不會印成 0.13）
+    assert all('#,##0.00##' in sheet[f'E{r}'].number_format for r in range(24, 34))
+    assert '$' in sheet['E24'].number_format
 
 
 def test_build_workbook_tax_included(valid_form, tmp_path):

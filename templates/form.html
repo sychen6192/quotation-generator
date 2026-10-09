@@ -40,7 +40,7 @@
     <legend class="h5 mb-0">客戶資料</legend>
     <div class="col-sm-6">
       <label class="form-label" for="taxid">公司統編</label>
-      <input class="form-control" id="taxid" name="taxid" inputmode="numeric" pattern="\d{8}" maxlength="8"
+      <input class="form-control" id="taxid" name="taxid" inputmode="numeric" pattern="[0-9０-９]{8}" maxlength="8"
              title="8 位數字" aria-describedby="taxid-help" value="{{ form.get('taxid', '') }}">
       <div class="form-text" id="taxid-help" aria-live="polite">填統編會自動帶出上次報價或經濟部登記的公司資料</div>
     </div>

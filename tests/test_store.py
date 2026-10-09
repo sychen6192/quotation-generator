@@ -196,3 +196,17 @@ def test_backup(conn, tmp_path):
     store.backup(conn, target)
     with closing(store.connect(target)) as copy:
         assert store.get_quote(copy, quote_no) is not None
+
+
+def test_find_customer_skips_void(conn):
+    store.create_quote(conn, make_quote(tax_id='24268597', customer_name='正確的人'), no_files)
+    wrong = store.create_quote(conn, make_quote(tax_id='24268597', customer_name='打錯的人'), no_files)
+    store.set_status(conn, wrong, 'open', 'void')
+    assert store.find_customer(conn, '24268597')['cname'] == '正確的人'
+
+
+def test_search_ignores_duplicate_and_excess_keywords(conn):
+    store.create_quote(conn, make_quote(company_name='甲公司'), no_files)
+    assert store.search_quotes(conn, ' '.join(['甲'] * 500))[1] == 1
+    many = '甲 ' + ' '.join(f'k{i}' for i in range(500))
+    store.search_quotes(conn, many)  # 不會超過 SQLite 的運算式上限

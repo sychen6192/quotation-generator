@@ -465,3 +465,79 @@ def test_backup_command(client, fake_pdf, valid_form, data_dir, tmp_path):
     assert (backup_dir / 'archive' / quote_no / 'quotation.xlsx').is_file()
     with sqlite3.connect(str(backup_dir / 'quotes.sqlite3')) as conn:
         assert conn.execute('SELECT quote_no FROM quotes').fetchall() == [(quote_no,)]
+
+
+# ---- 第二輪審查修正 ----
+
+def test_backup_refuses_missing_database(client, tmp_path, monkeypatch):
+    monkeypatch.setitem(main.app.config, 'DATA_DIR', str(tmp_path / 'wrong-dir'))
+    result = main.app.test_cli_runner().invoke(args=['backup', str(tmp_path / 'backups')])
+    assert result.exit_code != 0
+    assert '找不到資料庫' in result.output
+    assert not (tmp_path / 'wrong-dir').exists()   # 不會順手建立一個空的資料庫
+    assert not (tmp_path / 'backups').exists()
+
+
+def test_reused_number_does_not_serve_old_files(client, monkeypatch, valid_form, data_dir):
+    # 只還原資料庫時，archive 裡可能還有同單號的舊資料夾：不能把別的客戶的 PDF 當成新的
+    stale = data_dir / 'archive' / 'SD202107-001'
+    stale.mkdir(parents=True)
+    (stale / 'quotation.pdf').write_bytes(b'%PDF old customer')
+
+    def broken(xlsx_path, pdf_path):
+        raise PdfExportError('boom')
+    monkeypatch.setattr(main, 'export_pdf', broken)
+    assert generate(client, valid_form) == 'SD202107-001'
+    folder = data_dir / 'archive' / 'SD202107-001'
+    assert sorted(p.name for p in folder.iterdir()) == ['quotation.xlsx']
+    kept, = [p for p in (data_dir / 'archive').iterdir() if p.name.startswith('SD202107-001.orphaned-')]
+    assert (kept / 'quotation.pdf').read_bytes() == b'%PDF old customer'   # 舊檔案搬到旁邊保留
+    assert client.get('/quotes/SD202107-001/download/pdf').status_code == 302  # 重新轉檔（這裡會失敗）
+
+
+def test_voided_quote_is_not_used_as_customer_memory(client, fake_pdf, fake_lookup, valid_form):
+    fake_lookup(company.CompanyInfo('24268597', 'GCIS 公司', 'GCIS 地址'))
+    good = generate(client, dict(valid_form, taxid='24268597', cname='正確的人'))
+    bad = generate(client, dict(valid_form, taxid='24268597', cname='打錯的人', companyAddress='打錯的地址'))
+    client.post(f'/quotes/{bad}/status', data={'current': 'open', 'status': 'void'})
+    data = client.get('/api/customer?taxid=24268597').get_json()
+    assert (data['cname'], data['quote_no']) == ('正確的人', good)
+
+
+@pytest.mark.parametrize('query', [
+    {'page': '1000000000000000000'},
+    {'q': ' '.join(['a'] * 1000)},
+    {'q': ' '.join(f'k{i}' for i in range(1000))},
+])
+def test_history_handles_extreme_queries(client, fake_pdf, valid_form, query):
+    generate(client, valid_form)
+    assert client.get('/quotes', query_string=query).status_code == 200
+
+
+def test_huge_amounts_are_rejected_before_generating(client, valid_form, data_dir):
+    response = client.post('/generate', data=dict(valid_form, product='大型專案,1000000,99999999'))
+    assert response.status_code == 400
+    assert '金額太大' in html_of(response)
+    preview = client.post('/preview', data={'product': '大型專案,1000000,99999999', 'tax': 'n'}).get_json()
+    assert any('金額太大' in e for e in preview['errors'])
+
+
+def test_anti_framing_headers(client):
+    for path in ('/', '/quotes'):
+        response = client.get(path)
+        assert response.headers['X-Frame-Options'] == 'DENY'
+        assert "frame-ancestors 'none'" in response.headers['Content-Security-Policy']
+
+
+def test_same_origin_behind_reverse_proxy(client, fake_pdf, valid_form, monkeypatch):
+    # 代理把 Host 換成 127.0.0.1:8000，但有轉送 X-Forwarded-Host
+    proxied = {'Origin': 'https://quotes.example.com', 'X-Forwarded-Host': 'quotes.example.com'}
+    assert client.post('/generate', data=valid_form, headers=proxied, base_url='http://127.0.0.1:8000').status_code == 303
+    # 代理什麼都沒轉送：要在 QUOTATION_ALLOWED_HOSTS 設定使用者看到的主機
+    origin_only = {'Origin': 'https://quotes.example.com:8443'}
+    assert client.post('/generate', data=valid_form, headers=origin_only, base_url='http://127.0.0.1:8000').status_code == 403
+    monkeypatch.setitem(main.app.config, 'ALLOWED_ORIGIN_HOSTS', ['quotes.example.com:8443'])
+    assert client.post('/generate', data=valid_form, headers=origin_only, base_url='http://127.0.0.1:8000').status_code == 303
+    # 跨站的請求還是擋下來
+    evil = {'Origin': 'https://evil.example', 'X-Forwarded-Host': 'quotes.example.com'}
+    assert client.post('/generate', data=valid_form, headers=evil, base_url='http://127.0.0.1:8000').status_code == 403

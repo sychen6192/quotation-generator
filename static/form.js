@@ -31,6 +31,7 @@
 
   function updatePreview() {
     if (!productBox.value.trim()) {
+      ++previewSeq;  // 還在路上的舊結果回來時也不要再顯示
       preview.hidden = true;
       return;
     }
@@ -61,46 +62,66 @@
   field('tax').addEventListener('change', schedulePreview);
   if (productBox.value.trim()) updatePreview();
 
-  // ---- 統編：帶出上次報價或經濟部登記的資料，只填空白的欄位（手動輸入的優先） ----
+  // ---- 統編：帶出上次報價或經濟部登記的資料（手動輸入的優先） ----
   var taxId = field('taxid');
   var taxIdHelp = document.getElementById('taxid-help');
+  var defaultHelp = taxIdHelp.textContent;
   var customerPrices = {};
   var lastLookup = '';
+  var autofilled = {};  // 上一次自動帶入的值；欄位還是那個值就表示使用者沒改過，換統編時可以覆蓋
 
-  function fillIfEmpty(name, value) {
+  function fillFromLookup(name, value) {
     var input = field(name);
-    if (input && value && !input.value.trim()) input.value = value;
+    if (!input) return;
+    var current = input.value.trim();
+    if (!current || current === autofilled[name]) {
+      input.value = value || '';
+      autofilled[name] = value || '';
+    }
+  }
+
+  function currentTaxId() {
+    return taxId.value.normalize('NFKC').trim();
   }
 
   function lookupCustomer() {
-    var value = taxId.value.normalize('NFKC').trim();
-    if (!/^[0-9]{8}$/.test(value) || value === lastLookup) return;
+    var value = currentTaxId();
+    if (value === lastLookup) return;
+    customerPrices = {};  // 換了統編，上一個客戶的議價不能再用
+    if (!/^[0-9]{8}$/.test(value)) {
+      lastLookup = '';
+      taxIdHelp.textContent = defaultHelp;
+      return;
+    }
     lastLookup = value;
     taxIdHelp.textContent = '查詢中…';
     fetch(form.dataset.customerUrl + '?taxid=' + encodeURIComponent(value), { credentials: 'same-origin' })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
-        if (taxId.value.normalize('NFKC').trim() !== value) return;
+        if (currentTaxId() !== value) return;  // 使用者已經改了統編，這個結果作廢
         var data = result.data;
-        customerPrices = {};
         (data.items || []).forEach(function (item) { customerPrices[item.name] = item.price; });
         if (!result.ok) {
           taxIdHelp.textContent = '查不到這個統編，請手動填寫公司名稱與地址';
           return;
         }
-        fillIfEmpty('companyName', data.companyName);
-        fillIfEmpty('companyAddress', data.companyAddress);
-        fillIfEmpty('cname', data.cname);
-        fillIfEmpty('cphone', data.cphone);
+        ['companyName', 'companyAddress', 'cname', 'cphone'].forEach(function (name) {
+          fillFromLookup(name, data[name]);
+        });
         taxIdHelp.textContent = data.source === 'history'
           ? '已帶入上次報價 ' + data.quote_no + '（' + data.quote_date.replace(/-/g, '/') + '）的資料'
           : '已帶入經濟部商業司登記資料';
       })
-      .catch(function () { taxIdHelp.textContent = '暫時查不到公司資料，請手動填寫'; lastLookup = ''; });
+      .catch(function () {
+        if (lastLookup === value) lastLookup = '';  // 下次輸入時重試
+        if (currentTaxId() === value) taxIdHelp.textContent = '暫時查不到公司資料，請手動填寫';
+      });
   }
 
   taxId.addEventListener('input', lookupCustomer);
   taxId.addEventListener('change', lookupCustomer);
+  // 複製或錯誤重填時統編已經有值：載入這個客戶的品項價格（已填的欄位不會被覆蓋）
+  if (taxId.value.trim()) lookupCustomer();
 
   // ---- 從報價過的品項加入：把「品名,數量,上次單價」加成新的一行，單價之後還能改 ----
   var itemName = document.getElementById('item-name');
@@ -132,8 +153,11 @@
       schedulePreview();
       if (!price) productBox.focus();  // 沒報價過的品項：讓使用者自己填單價
     });
-    itemName.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') { event.preventDefault(); itemAdd.click(); }
+    // 在品名或數量欄按 Enter 是「加入」，不是送出整張報價單
+    [itemName, document.getElementById('item-qty')].forEach(function (input) {
+      input.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') { event.preventDefault(); itemAdd.click(); }
+      });
     });
   }
 
@@ -142,7 +166,14 @@
     button.addEventListener('click', function () {
       var note = field('note');
       var text = button.dataset.notePreset;
-      if (note.value.indexOf(text) === -1) appendLine(note, text);
+      var lines = note.value.trim() ? note.value.trim().split('\n').length : 0;
+      if (note.value.indexOf(text) === -1) {
+        if (lines >= 3) {
+          document.getElementById('note-help').textContent = '報價單上最多放 3 行，請先刪掉一行再加';
+        } else {
+          appendLine(note, text);
+        }
+      }
       note.focus();
     });
   });
@@ -175,15 +206,27 @@
     }
   }
 
+  function resetSelect(select) {
+    var index = 0;
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].defaultSelected) index = i;
+    }
+    select.selectedIndex = index;
+  }
+
   function applySellerDefaults() {
-    var store = storage();
-    if (!store) return;
+    var defaults = {};
     try {
-      var defaults = JSON.parse(store.getItem('quotation:defaults:' + field('seller').value) || '{}');
-      REMEMBERED.forEach(function (name) {
-        if (!touched[name] && defaults[name]) setSelect(field(name), defaults[name]);
-      });
-    } catch (e) { /* 存的資料壞了就忽略 */ }
+      var store = storage();
+      defaults = JSON.parse((store && store.getItem('quotation:defaults:' + field('seller').value)) || '{}');
+    } catch (e) { /* 存的資料壞了就當作沒有 */ }
+    REMEMBERED.forEach(function (name) {
+      if (touched[name]) return;  // 使用者自己選過的不動
+      // 這位銷售員沒有記錄的選項回到表單預設值，不要沿用上一位銷售員的
+      if (defaults[name]) setSelect(field(name), defaults[name]);
+      else resetSelect(field(name));
+    });
+    schedulePreview();  // 稅別可能變了
   }
 
   if (form.dataset.blank === 'true') {

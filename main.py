@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import unicodedata
 from contextlib import closing
 from datetime import datetime
@@ -30,6 +31,9 @@ app.config.update(
     # 兩個都設定時整個網站需要帳號密碼（HTTP Basic Auth，請搭配 HTTPS）
     USERNAME=os.environ.get('QUOTATION_USERNAME'),
     PASSWORD=os.environ.get('QUOTATION_PASSWORD'),
+    # 放在反向代理後面、代理沒有保留原本的 Host 時，列出使用者在瀏覽器看到的網址主機（可含 port），以逗號分隔
+    # （不要叫 TRUSTED_HOSTS：那是 Flask 內建的設定，會拒絕其他 Host 的請求）
+    ALLOWED_ORIGIN_HOSTS=[h.strip() for h in os.environ.get('QUOTATION_ALLOWED_HOSTS', '').split(',') if h.strip()],
 )
 if not (app.config['USERNAME'] and app.config['PASSWORD']):
     logger.warning('沒有設定 QUOTATION_USERNAME / QUOTATION_PASSWORD：任何連得到的人都能看到報價紀錄')
@@ -45,6 +49,7 @@ FORM_OPTIONS = dict(
     note_presets=q.NOTE_PRESETS,
 )
 DOWNLOAD_TYPES = {'pdf', 'xlsx'}
+MAX_PAGE = 10 ** 6
 _QUOTE_NO = re.compile(r'[A-Za-z0-9-]{1,40}')
 # 磁碟上一律用 ASCII 檔名（LANG=C 的 Linux/mod_wsgi 存不了中文檔名），下載時才用中文名稱
 FILE_STEM = 'quotation'
@@ -80,9 +85,23 @@ def require_same_origin():
     if request.method != 'POST':
         return None
     source = request.headers.get('Origin') or request.headers.get('Referer')
-    if source and urlsplit(source).netloc != request.host:
+    if not source:
+        return None
+    # 反向代理常把 Host 換掉，所以也接受代理轉送的 X-Forwarded-Host；跨站的表單沒辦法自己設定這個標頭
+    allowed = {request.host, *app.config['ALLOWED_ORIGIN_HOSTS']}
+    allowed.update(h.strip() for h in request.headers.get('X-Forwarded-Host', '').split(',') if h.strip())
+    if urlsplit(source).netloc not in allowed:
         abort(403)
     return None
+
+
+@app.after_request
+def security_headers(response):
+    # 不讓別的網站用 iframe 嵌入，避免騙使用者點到「作廢」之類的按鈕
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Content-Security-Policy', "frame-ancestors 'none'")
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    return response
 
 
 def data_dir() -> Path:
@@ -164,8 +183,13 @@ def generate():
 
     def write_files(numbered: q.Quotation) -> None:
         folder = quote_dir(numbered.quote_no)
+        if folder.exists():
+            # 資料庫裡沒有這個單號卻有資料夾（例如只還原了資料庫）：搬到旁邊保留，不要拿別人的 PDF 來用
+            stamp = datetime.now(q.TAIPEI).strftime('%Y%m%d%H%M%S')
+            folder.rename(folder.with_name(f'{folder.name}.orphaned-{stamp}'))
+            logger.warning('單號 %s 已有舊的檔案資料夾，已改名保留', numbered.quote_no)
         folders.append(folder)
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(parents=True)
         q.build_workbook(numbered).save(folder / f'{FILE_STEM}.xlsx')
 
     try:
@@ -200,7 +224,7 @@ def export_archived_pdf(quote_no: str) -> bool:
 @app.get('/quotes')
 def quote_list():
     keywords = request.args.get('q', '').strip()
-    page = max(request.args.get('page', 1, type=int) or 1, 1)
+    page = min(max(request.args.get('page', 1, type=int) or 1, 1), MAX_PAGE)
     records, total = store.search_quotes(get_db(), keywords, page)
     pages = max(1, -(-total // store.PAGE_SIZE))
     return render_template('history.html', records=records, total=total, keywords=keywords,
@@ -289,13 +313,19 @@ def request_too_large(_e):
 @click.argument('destination', type=click.Path(file_okay=False, path_type=Path))
 def backup_command(destination: Path):
     """把資料庫和所有報價單檔案備份到 DESTINATION 底下的新資料夾。"""
+    db_path = data_dir() / 'quotes.sqlite3'
+    if not db_path.is_file():
+        # 排程沒帶到 QUOTATION_DATA_DIR 時不要默默備份一個空的資料庫
+        raise click.ClickException(f'找不到資料庫 {db_path}，請確認 QUOTATION_DATA_DIR 和網站設定相同')
     target = destination / f'quotation-backup-{datetime.now(q.TAIPEI):%Y%m%d-%H%M%S}'
-    with closing(store.connect(data_dir() / 'quotes.sqlite3')) as conn:
-        store.backup(conn, target / 'quotes.sqlite3')
+    # 先複製檔案再備份資料庫：備份裡就不會有資料庫沒記錄的資料夾（少了的檔案下載時會從快照重建）
     archive = data_dir() / 'archive'
     if archive.is_dir():
         shutil.copytree(archive, target / 'archive')
-    click.echo(f'已備份到 {target}')
+    with closing(sqlite3.connect(f'{db_path.as_uri()}?mode=ro', uri=True)) as conn:
+        store.backup(conn, target / 'quotes.sqlite3')
+        count = conn.execute('SELECT COUNT(*) FROM quotes').fetchone()[0]
+    click.echo(f'已備份 {db_path}（{count} 張報價單）到 {target}')
 
 
 if __name__ == '__main__':

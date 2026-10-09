@@ -31,7 +31,7 @@
           <tr>
             <td class="text-nowrap"><a href="{{ url_for('quote_detail', quote_no=quote.quote_no) }}">{{ quote.quote_no }}</a></td>
             <td class="text-nowrap">{{ quote.quote_date.strftime('%Y/%m/%d') }}</td>
-            <td>{{ quote.company_name or quote.customer_name }}{% if quote.company_name %}<div class="small text-muted">{{ quote.customer_name }}</div>{% endif %}</td>
+            <td style="min-width: 8rem">{{ quote.company_name or quote.customer_name }}{% if quote.company_name %}<div class="small text-muted">{{ quote.customer_name }}</div>{% endif %}</td>
             <td class="text-nowrap">{{ quote.seller }}</td>
             <td class="text-end text-nowrap">{{ quote.totals.total|money }}</td>
             <td class="text-nowrap">{{ quote.valid_until.strftime('%Y/%m/%d') }}</td>

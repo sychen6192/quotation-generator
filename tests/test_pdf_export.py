@@ -233,3 +233,37 @@ def test_libreoffice_rounding_matches_python(tmp_path):
         product = [q.Product('x', Decimal(1), Decimal(subtotal))]
         assert Decimal(row[4]) == q.compute_totals(product, False).tax, (subtotal, row[4])
         assert Decimal(row[5]) == q.compute_totals(product, True).tax, (subtotal, row[5])
+
+
+# 多列加總的浮點誤差：83.32 + 44.95 + 29.23 在 Excel 是 157.49999999999997，沒先 ROUND 會少算 1 元稅
+_TEMPLATE_CASES = [
+    ('筆電,1,83.32\n滑鼠,1,44.95\n鍵盤,1,29.23', 'y'),
+    ('螢幕,1,623.56\n線材,1,81.60\n轉接頭,1,24.84', 'n'),
+    ('螺絲,1000,0.125\n墊片,3,0.333\n折扣,1,-0.001', 'n'),
+    ('A,1.5,12.25\nB,7,0.145\nC,1,1.005\n折扣,1,-10.5', 'y'),
+    ('A,3,33.33\nB,3,33.33\nC,1,0.01', 'n'),
+    ('大型專案,1,95000000', 'n'),
+]
+
+
+@needs_soffice
+def test_template_totals_match_web_page(tmp_path, valid_form):
+    """用真的範本填好後讓 LibreOffice 計算，小計、稅額、總計要和網頁上的數字一樣。"""
+    quotes = []
+    for i, (products, tax) in enumerate(_TEMPLATE_CASES):
+        quote = q.parse_form(dict(valid_form, product=products, tax=tax), today=date(2021, 7, 16))
+        q.build_workbook(quote).save(tmp_path / f'case{i}.xlsx')
+        quotes.append(quote)
+    profile = (tmp_path / 'profile').as_uri()
+    subprocess.run([pdf_export.find_soffice(), f'-env:UserInstallation={profile}', '--headless',
+                    '--convert-to', 'csv', '--outdir', str(tmp_path),
+                    *(str(tmp_path / f'case{i}.xlsx') for i in range(len(quotes)))],
+                   capture_output=True, timeout=180, check=True)
+
+    for i, quote in enumerate(quotes):
+        rows = (tmp_path / f'case{i}.csv').read_text(encoding='utf-8').splitlines()
+        cell = lambda row: Decimal(rows[row - 1].split(',')[6])  # noqa: E731（G 欄）
+        totals = quote.totals
+        assert (cell(34), cell(36), cell(38)) == (totals.subtotal, totals.tax, totals.total), _TEMPLATE_CASES[i]
+        for row, product in enumerate(quote.products, start=24):
+            assert cell(row) == product.amount, (_TEMPLATE_CASES[i], row)

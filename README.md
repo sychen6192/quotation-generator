@@ -18,7 +18,8 @@
 
 ## 金額怎麼算
 
-- 品項一行一項 `商品名稱,數量,單價`，最多 10 項（範本只有 10 列）；數量與單價可以有小數。名稱和金額裡不能再有逗號（避免 `1,000` 被讀成 1）。
+- 品項一行一項 `商品名稱,數量,單價`，最多 10 項（範本只有 10 列）；數量與單價最多 4 位小數。名稱和金額裡不能再有逗號（避免 `1,000` 被讀成 1）。
+- 單價、每列金額和總計都要小於 1 億（再大報價單的欄位放不下）。
 - 折扣寫成單價為負數的一列（`折扣,1,-500`），運費寫成一般品項（`運費,1,150`）。
 - 每列金額四捨五入到分；營業稅和發票一樣**四捨五入到元**。網頁上的數字和報價單上 Excel 公式的算法相同，有測試確認兩者一致。
 - **未稅**：應稅欄標 `T`，另加 5% 稅額。
@@ -57,6 +58,7 @@ flask --app main run            # 開發時加 --debug
 | --- | --- | --- |
 | `QUOTATION_DATA_DIR` | 專案資料夾下的 `data/` | 報價紀錄資料庫 `quotes.sqlite3` 和每張報價單的檔案 `archive/<單號>/` 都放這裡；相對路徑以啟動時的工作目錄為準 |
 | `QUOTATION_USERNAME`、`QUOTATION_PASSWORD` | 未設定 | 兩個都設定時，整個網站要先登入（HTTP Basic Auth）。報價紀錄有客戶資料、報價單上有公司發票章，放到網路上時務必開啟並使用 HTTPS |
+| `QUOTATION_ALLOWED_HOSTS` | 未設定 | 放在反向代理後面時才需要：使用者在瀏覽器看到的主機（可含 port，逗號分隔），例如 `quotes.example.com:8443`。代理有保留原本的 Host（nginx `proxy_set_header Host $http_host;`、Apache `ProxyPreserveHost On`）或有送 `X-Forwarded-Host` 時不用設 |
 | `PDF_BACKEND` | `auto` | `excel`、`libreoffice` 或 `auto`（Windows 用 Excel，其他用 LibreOffice） |
 | `SOFFICE_PATH` | 自動尋找 | LibreOffice `soffice` 執行檔路徑 |
 
